@@ -11,31 +11,30 @@ permissions:
 
 concurrency:
   group: gitops-${{ github.ref }}
-  cancel-in-progress: false  # dont cancel in progress runs, wait for them to finish
+  cancel-in-progress: false  # dont cancel in progress runs
 
 env:
-  REGISTRY: ghcr.io  # github container registry where images will be stored
-  SERVICES: backend,transactions,studentportfolio,syncer  # all services to build
-  TARGET_BRANCH: main  # branch to push gitops changes to
+  REGISTRY: ghcr.io  # github container registry
+  SERVICES: backend,transactions,studentportfolio,syncer
+  TARGET_BRANCH: main
 
 jobs:
   build-and-push:
     name: Build & Push Images
-    runs-on: ubuntu-latest  # use githubs hosted ubuntu runner
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [backend, transactions, studentportfolio, syncer]  # run this job for each service
+        service: [backend, transactions, studentportfolio, syncer]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4  # checkout the code from the repo
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Check service has a Dockerfile
         id: check
         run: |
-          # check if a dockerfile exists for this service
-          # if not skip the build step
+          # check if a dockerfile exists for this service, if not skip
           if [ -f "./${{ matrix.service }}/Dockerfile" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           else
@@ -44,25 +43,27 @@ jobs:
           fi
 
       - name: Log in to GHCR
-        if: steps.check.outputs.build == 'true'  # only run if dockerfile exists
+        if: steps.check.outputs.build == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.repository_owner }}  # your github username
-          password: ${{ secrets.CR_PAT }}           # token stored as github secret
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.CR_PAT }}  # token stored as github secret
 
       - name: Set up Docker Buildx
-        if: steps.check.outputs.build == 'true'  # only run if dockerfile exists
-        uses: docker/setup-buildx-action@v3       # sets up docker buildx for building images
+        if: steps.check.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
 
+      # build and push image with two tags - latest and commit SHA
+      # using commit SHA ensures every build has a unique tag
+      # this allows for using a previous version if the newest one has issues
       - name: Build & push ${{ matrix.service }}
-        if: steps.check.outputs.build == 'true'  # only run if dockerfile exists
+        if: steps.check.outputs.build == 'true'
         uses: docker/build-push-action@v5
         with:
-          context: ./${{ matrix.service }}  # build from the service folder
-          push: true                         # push the image to ghcr.io
+          context: ./${{ matrix.service }}
+          push: true
           tags: |
-            # tag with latest and commit SHA so every build is unique
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ github.event.repository.name }}-${{ matrix.service }}:latest
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ github.event.repository.name }}-${{ matrix.service }}:${{ github.sha }}
           provenance: false
@@ -71,7 +72,7 @@ jobs:
   update-gitops:
     name: Update GitOps manifests
     runs-on: ubuntu-latest
-    needs: build-and-push  # only runs after all images are successfully built and pushed
+    needs: build-and-push  # only runs after all images are built and pushed
     steps:
       - name: Checkout app repo (for k8s folder)
         uses: actions/checkout@v4
@@ -90,13 +91,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          # set up git identity and credentials so pipeline can commit
+          # set up git identity so pipeline can commit
           git config --global user.name  "GitHub Actions"
           git config --global user.email "actions@github.com"
           git config --global credential.helper store
           printf "https://%s:x-oauth-basic@github.com\n" "$GIT_TOKEN" > ~/.git-credentials
 
-          # clone the gitops repo or initialize it if it doesnt exist yet
+          # clone the gitops repo or initialize it if it doesnt exist
           workdir="$(mktemp -d)"
           echo "Cloning GitOps repo ${GITOPS_REPO} ..."
           if git clone "https://github.com/${GITOPS_REPO}.git" "$workdir/gitops"; then
@@ -109,7 +110,7 @@ jobs:
             git remote add origin "https://github.com/${GITOPS_REPO}.git"
           fi
 
-          # make sure we are on the correct branch even if repo is empty
+          # make sure we are on the correct branch
           if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
             git checkout --orphan "${TARGET_BRANCH}"
           else
@@ -134,15 +135,14 @@ jobs:
             fi
           fi
 
-          # replace any placeholder image names with real owner and repo name
+          # replace placeholder image names with real owner and repo name
           find k8s -type f -name "*deployment*.yaml" -print0 | xargs -0 sed -i -E \
             "s|image:\s*ghcr\.io/OWNER/REPO-([a-z0-9._-]+):[^[:space:]]+|image: ${REGISTRY}/${OWNER}/${APP_REPO}-\1:latest|g"
 
-          # remove any windows line endings or trailing spaces
+          # remove windows line endings or trailing spaces
           find k8s -type f -name "*deployment*.yaml" -print0 | xargs -0 sed -i 's/\r$//; s/[[:space:]]\+$//'
 
-          # update image tags in all deployment files to the current commit SHA
-          # this ensures every deployment uses the exact image that was just built
+          # update image tags to current commit SHA so argocd deploys the right version
           while IFS= read -r -d '' f; do
             sed -i -E "s|(image:\s*${REGISTRY}/${OWNER}/${APP_REPO}-[a-z0-9._-]+:)[^[:space:]]+|\1${GITHUB_SHA}|g" "$f"
           done < <(find k8s -type f -name "*deployment*.yaml" -print0)
@@ -153,7 +153,6 @@ jobs:
             echo "::warning:: No deployment YAMLs found under k8s/. Skipping tag bump."
           else
             for f in "${files[@]}"; do
-              # bump each deployment file image tag to current commit SHA
               sed -i -E "s|(image:\s*${REGISTRY}/${OWNER}/${APP_REPO}-[a-z0-9._-]+:)[^[:space:]]+|\\1${GITHUB_SHA}|g" "$f"
             done
           fi
@@ -161,12 +160,12 @@ jobs:
           # commit and push changes to gitops repo if anything changed
           git add -A
           if git diff --cached --quiet; then
-            echo "No changes to commit."  # nothing changed so skip commit
+            echo "No changes to commit."
           else
-            git commit -m "GitOps: update images to ${GITHUB_SHA}"  # commit with the commit SHA as message
+            git commit -m "GitOps: update images to ${GITHUB_SHA}"
           fi
 
-          # push the updated manifests to the gitops repo
+          # push updated manifests to gitops repo so argocd can detect the change
           git remote remove origin >/dev/null 2>&1 || true
           git remote add origin "https://${GIT_TOKEN}@github.com/${GITOPS_REPO}.git"
           git push -u origin "${TARGET_BRANCH}"
