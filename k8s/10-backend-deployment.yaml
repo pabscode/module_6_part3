@@ -20,7 +20,7 @@ spec:
       containers:
         - name: backend
           image: ghcr.io/pabscode/module_6_part3-backend:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 5000

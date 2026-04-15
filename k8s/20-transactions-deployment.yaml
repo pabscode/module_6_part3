@@ -20,7 +20,7 @@ spec:
       containers:
         - name: transactions
           image: ghcr.io/pabscode/module_6_part3-transactions:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 3000
